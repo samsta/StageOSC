@@ -1,12 +1,13 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"strconv"
 	"time"
 
-	"github.com/hypebeast/go-osc/osc"
 	"github.com/icedream/go-stagelinq"
+	"github.com/samsta/go-osc/osc"
 )
 
 const (
@@ -29,11 +30,9 @@ var stateValues = []string{
 	stagelinq.EngineDeck4.TrackSongName(),
 }
 
-func display(state *stagelinq.State) {
-	log.Printf("\t%s = %v", state.Name, state.Value)
-}
-
 func main() {
+	verbose := flag.Bool("verbose", false, "Enable verbose output")
+	flag.Parse()
 
 	listener, err := stagelinq.ListenWithConfiguration(&stagelinq.ListenerConfiguration{
 		DiscoveryTimeout: timeout,
@@ -46,7 +45,10 @@ func main() {
 	}
 	defer listener.Close()
 
-	oscClient := osc.NewClient("127.0.0.1", 57200)
+	oscClient, err := osc.NewClient("127.0.0.1", 57200)
+	if err != nil {
+		log.Fatalf("Failed to create OSC client: %v", err)
+	}
 
 	listener.AnnounceEvery(time.Second)
 
@@ -121,7 +123,7 @@ discoveryLoop:
 							for {
 								select {
 								case state := <-stateMapConn.StateC():
-									display(state)
+									log.Printf("\t%s = %v", state.Name, state.Value)
 									msg := osc.NewMessage(state.Name)
 									msg.Append(state.Value["string"])
 									err = oscClient.Send(msg)
@@ -154,14 +156,21 @@ discoveryLoop:
 							log.Println("\t\trequesting start BeatInfo stream...")
 							beatInfoConn.StartStream()
 
+							last_beat := [4]int{0, 0, 0, 0}
+
 							for {
 								select {
 								case bi := <-beatInfoConn.BeatInfoC():
-									log.Printf("\t\t\t%+v", bi)
+									if *verbose {
+										log.Printf("\t\t\t%+v", bi)
+									}
 									for index, deck := range bi.Players {
-										if deck.TotalBeats > 0 {
-											msg := osc.NewMessage("/Engine/Deck" + strconv.Itoa(index) + "/Beat")
-											msg.Append(deck.Beat)
+										// only send beat messages once per beat, or if the beat counter goes backwards
+										if deck.TotalBeats > 0 && (int(deck.Beat) >= last_beat[index]+1 || int(deck.Beat) < last_beat[index]) {
+											last_beat[index] = int(deck.Beat)
+											msg := osc.NewMessage("/Engine/Deck" + strconv.Itoa(index+1) + "/Beat")
+											msg.Append(float32(deck.Beat))
+											log.Printf("\t%+v", msg)
 											err = oscClient.Send(msg)
 											if err != nil {
 												log.Printf("Failed to send OSC message: %v", err)
